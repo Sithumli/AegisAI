@@ -4,7 +4,6 @@ Copyright (C) 2024 Sarthak Doshi (github.com/SdSarthak)
 SPDX-License-Identifier: AGPL-3.0-only
 """
 
-import asyncio
 import hashlib
 import hmac
 import json
@@ -12,7 +11,7 @@ import logging
 from typing import Any, List
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
@@ -66,11 +65,13 @@ def deliver_webhook(
     user_id: int,
     event: str,
     payload: dict[str, Any],
+    background_tasks: BackgroundTasks,
 ) -> None:
     """
-    Fire-and-forget delivery to active user webhooks subscribed to the event.
+    Schedule delivery to active user webhooks subscribed to the event.
 
-    Delivery failures are logged and never block the caller.
+    Delivery runs in FastAPI BackgroundTasks so webhook failures do not block
+    or fail the originating request.
     """
     webhooks = (
         db.query(WebhookConfig)
@@ -87,21 +88,13 @@ def deliver_webhook(
         if event not in subscribed_events:
             continue
 
-        try:
-            asyncio.create_task(
-                _post_webhook(
-                    url=webhook.url,
-                    event=event,
-                    payload=payload,
-                    secret=webhook.secret,
-                )
-            )
-        except RuntimeError:
-            logger.exception(
-                "Webhook delivery could not be scheduled for event=%s url=%s",
-                event,
-                webhook.url,
-            )
+        background_tasks.add_task(
+            _post_webhook,
+            url=webhook.url,
+            event=event,
+            payload=payload,
+            secret=webhook.secret,
+        )
 
 
 @router.post("", response_model=WebhookResponse, status_code=status.HTTP_201_CREATED)
